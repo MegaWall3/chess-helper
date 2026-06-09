@@ -2,54 +2,68 @@ from flask import Flask, request, jsonify
 import requests
 import os
 import json
-from. import engine
+import config
 from. import main
 
 app = Flask(__name__) #创建应用,谁有这句代码 谁就是入口
 
 print(os.getcwd()) # 如果相对路径出问题,就看看cwd的打印,以这里为基点配置相对路径
 
-# 上传文件的存放路径以及文件夹的创建
-UPLOAD_FOLDER = './app/uploads/'  
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER  
-if not os.path.exists(UPLOAD_FOLDER):  
-    os.makedirs(UPLOAD_FOLDER) 
-
-# 在应用入口初始化pikafish引擎, 这个进程将在整个应用的运行期间保持存在
-engine.init_engine()
+# 上传图片只作为本次分析的缓存文件保存。
+app.config['UPLOAD_FOLDER'] = config.CACHE_FOLDER
+if not os.path.exists(config.CACHE_FOLDER):
+    os.makedirs(config.CACHE_FOLDER)
 
 # @app.route() 可以视为一个装饰器, 装饰后面紧跟着的那个函数
 @app.route('/upload', methods=['GET', 'POST'])  
 def upload_file():  
-    # 检查请求中是否有文件部分  
-    if 'image' not in request.files:  
-        return jsonify({"error": 'No image part'}), 400 
-    if 'param' not in request.form:  
-        return jsonify({"error": 'No param part'}), 400 
+    if request.files:
+        filepath, param_data = read_multipart_upload()
+    else:
+        filepath, param_data = read_body_upload()
+
+    if filepath is None:
+        return jsonify({"error": 'No upload image'}), 400
+
+    # 保持 JSON 响应，方便移动端或快捷指令读取错误信息。
+    try:
+        info = main.main(filepath, param_data)
+    except Exception as error:
+        info = f"分析失败: {error}"
+    return jsonify({"message": info})
+
+def read_multipart_upload():
+    if 'image' not in request.files or request.files['image'].filename == '':
+        return None, {}
+    if 'param' not in request.form:
+        return None, {}
+
+    try:
+        param_data = json.loads(request.form['param'])
+    except json.JSONDecodeError:
+        return None, {}
+
     image = request.files['image']
-    # 如果没有文件，客户端也会提交一个没有文件名的空部分  
-    if image.filename == '':  
-        return jsonify({"message": 'No upload image'})
-    
-    param = request.form['param']
-    # 尝试将JSON字符串解析为 Python 字典
-    try:  
-        param_data = json.loads(param)  
-    except json.JSONDecodeError:  
-        return jsonify({'error': 'Invalid JSON data provided'}), 400 
-    
-    if image and param_data:  
-        filename = image.filename  
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)  
-        image.save(filepath)  
-        # print(f"param数据:\n{param_data} \n图片路径: {filepath}")
-        # 保持 JSON 响应，方便移动端或快捷指令读取错误信息。
-        try:
-            info = main.main(filepath, param_data)
-        except Exception as error:
-            info = f"分析失败: {error}"
-        # print(f'{info}\n')
-        return jsonify({"message": info})
+    filepath = os.path.join(app.config['UPLOAD_FOLDER'], image.filename)
+    image.save(filepath)
+    return filepath, param_data
+
+def read_body_upload():
+    image_data = request.get_data()
+    if not image_data:
+        return None, {}
+
+    param_data = {
+        "platform": request.args.get("platform", config.DEFAULT_PLATFORM),
+        "autoModel": request.args.get("autoModel", config.DEFAULT_AUTO_MODEL),
+        "goParam": request.args.get("goParam", config.DEFAULT_GO_PARAM),
+        "movetime": request.args.get("movetime", config.DEFAULT_MOVETIME),
+        "depth": request.args.get("depth", config.DEFAULT_DEPTH),
+    }
+    filepath = os.path.join(app.config['UPLOAD_FOLDER'], 'upload.png')
+    with open(filepath, 'wb') as file:
+        file.write(image_data)
+    return filepath, param_data
 
 # 使用'bark'通知
 @app.route('/bark_notification')

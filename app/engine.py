@@ -1,12 +1,11 @@
 import time
-import os
+import atexit
 import queue
 import subprocess
 import threading
-
-PIKAFISH_COMMAND = './app/Pikafish/src/pikafish'
-ENGINE_THREADS = os.cpu_count()
-ENGINE_HASH_MB = 256
+import config
+from. import analysis
+from. import pikafish as pikafish_files
 
 pikafish = None
 output_queue = None
@@ -23,21 +22,25 @@ def init_engine():
 
     # 开辟一个子进程, 运行引擎
     output_queue = queue.Queue()
+    pikafish_command = pikafish_files.resolve_command()
     pikafish = subprocess.Popen(
-        PIKAFISH_COMMAND,
+        pikafish_command,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
         bufsize=1,
+        cwd=config.PIKAFISH_HOME,
     )
     # 统一收集引擎输出，避免启动日志混入后续 bestmove 解析。
     threading.Thread(target=read_engine_stdout, args=(pikafish, output_queue), daemon=True).start()
 
     # 准备
     uci(pikafish) # 可以用全局变量,也可以用传参
-    setoption(f'setoption name Threads value {ENGINE_THREADS}')
-    setoption(f'setoption name Hash value {ENGINE_HASH_MB}')
+    setoption(f'setoption name Threads value {config.ENGINE_THREADS}')
+    setoption(f'setoption name Hash value {config.ENGINE_HASH_MB}')
+    setoption(f'setoption name MultiPV value {config.ENGINE_MULTI_PV}')
+    setoption(f'setoption name EvalFile value {pikafish_files.resolve_nnue_file()}')
     setoption('setoption name UCI_ShowWDL value true')
     isready()
 
@@ -45,21 +48,32 @@ def is_engine_alive():
     return pikafish is not None and pikafish.poll() is None
 
 def restart_engine():
+    stop_engine()
+    init_engine()
+
+def stop_engine():
     global pikafish, output_queue
-    if pikafish is not None and pikafish.poll() is None:
-        pikafish.terminate()
-        try:
-            pikafish.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            pikafish.kill()
-            pikafish.wait(timeout=2)
+    process = pikafish
     pikafish = None
     output_queue = None
-    init_engine()
+    if process is None or process.poll() is not None:
+        return
+
+    try:
+        process.stdin.write('quit\n')
+        process.stdin.flush()
+        process.wait(timeout=2)
+    except (BrokenPipeError, OSError, ValueError, subprocess.TimeoutExpired):
+        process.terminate()
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=2)
 
 def ensure_engine():
     if not is_engine_alive():
-        restart_engine()
+        init_engine()
 
 def get_best_move(fen, side, parameter):
     fen_string = fen + ' ' + ('w' if side else 'b')
@@ -67,8 +81,8 @@ def get_best_move(fen, side, parameter):
     param = parameter['goParam']
     value = parameter[param]
     if param is None or param == '' or value is None or value == '':
-        param = 'depth'
-        value = '20'
+        param = config.DEFAULT_GO_PARAM
+        value = parameter.get(param, config.DEFAULT_MOVETIME)
 
     # 单个 UCI 进程共用一条输出流，搜索请求需要串行处理。
     with engine_lock:
@@ -77,9 +91,9 @@ def get_best_move(fen, side, parameter):
             try:
                 ensure_engine()
                 lines, best_move = go(fen_string, param, str(value))
-                analysis = parse_analysis(lines, side)
+                engine_analysis = analysis.parse_engine_info(lines, side)
                 break
-            except (BrokenPipeError, OSError, EngineError) as error:
+            except (BrokenPipeError, OSError, EngineError, pikafish_files.PikafishFileError) as error:
                 last_error = error
                 restart_engine()
         else:
@@ -89,70 +103,12 @@ def get_best_move(fen, side, parameter):
         best_move = "No output received within engine timeout"
     elif best_move:
         best_move = best_move.split()[1]
-        if not is_valid_bestmove(best_move):
+        if not analysis.is_valid_bestmove(best_move):
             best_move = "No valid bestmove"
     else:
         best_move = "No valid bestmove"
 
-    return best_move, fen_string, analysis
-
-def is_valid_bestmove(move):
-    return (
-        len(move) == 4
-        and move[0].isalpha()
-        and move[1].isdigit()
-        and move[2].isalpha()
-        and move[3].isdigit()
-    )
-
-def parse_analysis(lines, side):
-    # 从最后一条评分信息中提取领先分或杀棋，用于结果第二行展示。
-    info_lines = [line for line in lines if line.startswith('info ') and ' score ' in line]
-    if not info_lines:
-        return {}
-
-    latest = info_lines[-1].split()
-    analysis = {"raw": info_lines[-1]}
-
-    if "depth" in latest:
-        analysis["depth"] = latest[latest.index("depth") + 1]
-
-    if "score" in latest:
-        score_index = latest.index("score")
-        score_type = latest[score_index + 1]
-        score_value = int(latest[score_index + 2])
-        if score_type == "cp":
-            analysis["score_cp"] = score_value
-            analysis["score_text"] = format_score(score_value, side)
-        elif score_type == "mate":
-            analysis["mate"] = score_value
-            analysis["mate_text"] = format_mate(score_value, side)
-
-    if "wdl" in latest:
-        wdl_index = latest.index("wdl")
-        wins = int(latest[wdl_index + 1])
-        draws = int(latest[wdl_index + 2])
-        losses = int(latest[wdl_index + 3])
-        analysis["wdl"] = (wins, draws, losses)
-
-    if "pv" in latest:
-        pv_index = latest.index("pv")
-        analysis["pv"] = " ".join(latest[pv_index + 1:pv_index + 6])
-
-    return analysis
-
-def format_score(score_cp, side):
-    if score_cp == 0:
-        return "局面均势"
-
-    lead_is_red = score_cp > 0 if side else score_cp < 0
-    lead_side = "红方" if lead_is_red else "黑方"
-    return f"{lead_side}领先{abs(score_cp) / 100:.2f}分"
-
-def format_mate(mate, side):
-    lead_is_red = mate > 0 if side else mate < 0
-    lead_side = "红方" if lead_is_red else "黑方"
-    return f"{lead_side}{abs(mate)}步杀"
+    return best_move, fen_string, engine_analysis
 
 def write_command(process, command):
     if process is None or process.poll() is not None:
@@ -308,3 +264,5 @@ def read_output_with_timeout(process, timeout=1):
     
     # 返回: 所有输出以及包含bestmove的行            
     return lines, best_move 
+
+atexit.register(stop_engine)

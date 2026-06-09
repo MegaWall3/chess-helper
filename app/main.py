@@ -1,13 +1,12 @@
 from. import recognition
 from. import utils
 from. import engine
-from. import routes
 
 last_position = None
 
 def main(img_path, param):  
     # 棋局图像  
-    # img_path = './app/uploads/图像.jpeg' 
+    # img_path = './cache/upload.png'
 
     # 预处理 : 把共同的图像处理操作抽出来,当前只有灰度化是共用的
     image, gray = recognition.pre_processing_image(img_path)
@@ -40,10 +39,10 @@ def main(img_path, param):
         return f"分析失败: 引擎未返回有效走法\n{move}"
 
     # 发送通知
-    info = utils.convert_move_to_chinese(move, board_array, is_red)
+    info = format_moves(move, analysis, board_array, is_red)
     second_line = format_analysis(analysis)
     if second_line:
-        info = f"{info}\n{second_line}"
+        info = f"{second_line}\n{info}"
     # routes.bark_notification(info)
     return info
 
@@ -52,9 +51,22 @@ def format_analysis(analysis):
         return ""
 
     if "mate_text" in analysis:
-        return analysis["mate_text"]
+        score_text = analysis["mate_text"]
+    else:
+        score_text = analysis.get("score_text", "")
 
-    return analysis.get("score_text", "")
+    return score_text
+
+def format_moves(best_move, analysis, board_array, is_red):
+    moves = analysis.get("moves", []) if analysis else []
+    if best_move not in moves:
+        moves.insert(0, best_move)
+
+    labels = ["①", "②"]
+    chinese_moves = []
+    for index, move in enumerate(moves[:2]):
+        chinese_moves.append(f"{labels[index]}{utils.convert_move_to_chinese(move, board_array, is_red)}")
+    return " ".join(chinese_moves)
 
 
     

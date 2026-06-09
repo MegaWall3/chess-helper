@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import os
+import config
 from. import utils
 
 class RecognitionError(Exception):
@@ -97,16 +98,80 @@ def infer_board_from_circles(circles, region):
     if len(board_circles) < 4:
         return None
 
-    x_min = min(x for x, _, _ in board_circles)
-    x_max = max(x for x, _, _ in board_circles)
-    y_min = min(y for _, y, _ in board_circles)
-    y_max = max(y for _, y, _ in board_circles)
-    x_step = (x_max - x_min) / 8
-    y_step = (y_max - y_min) / 9
+    best_grid = find_best_board_grid(board_circles, region)
+    if best_grid is None:
+        return None
 
-    x_array = [round(x_min + x_step * i) for i in range(9)]
-    y_array = [round(y_min + y_step * i) for i in range(10)]
+    x0, y0, step = best_grid
+    x_array = [round(x0 + step * i) for i in range(9)]
+    y_array = [round(y0 + step * i) for i in range(10)]
     return x_array, y_array
+
+def find_best_board_grid(circles, region):
+    best_grid = None
+    best_score = None
+    for step in grid_step_candidates(circles):
+        for x, y, _ in circles:
+            for col in range(9):
+                x0 = x - col * step
+                if not grid_x_in_region(x0, step, region):
+                    continue
+                for row in range(10):
+                    y0 = y - row * step
+                    if not grid_y_in_region(y0, step, region):
+                        continue
+                    score = score_board_grid(circles, x0, y0, step)
+                    if best_score is None or score > best_score:
+                        best_score = score
+                        best_grid = (x0, y0, step)
+    return best_grid
+
+def grid_step_candidates(circles):
+    median_radius = np.median([r for _, _, r in circles])
+    min_step = median_radius * 1.6
+    max_step = median_radius * 2.8
+    steps = set()
+
+    for index, (x1, y1, _) in enumerate(circles):
+        for x2, y2, _ in circles[index + 1:]:
+            add_step_candidates(steps, abs(x2 - x1), 8, min_step, max_step)
+            add_step_candidates(steps, abs(y2 - y1), 9, min_step, max_step)
+
+    return sorted(steps)
+
+def add_step_candidates(steps, distance, max_grid_span, min_step, max_step):
+    for span in range(1, max_grid_span + 1):
+        step = distance / span
+        if min_step <= step <= max_step:
+            steps.add(round(step))
+
+def grid_x_in_region(x0, step, region):
+    x_min, _, x_max, _ = region
+    return x_min - step <= x0 and x0 + step * 8 <= x_max + step
+
+def grid_y_in_region(y0, step, region):
+    _, y_min, _, y_max = region
+    return y_min - step <= y0 and y0 + step * 9 <= y_max + step
+
+def score_board_grid(circles, x0, y0, step):
+    tolerance = step * 0.28
+    matched_points = set()
+    error = 0
+    for x, y, _ in circles:
+        col = round((x - x0) / step)
+        row = round((y - y0) / step)
+        if not (0 <= col < 9 and 0 <= row < 10):
+            continue
+
+        grid_x = x0 + col * step
+        grid_y = y0 + row * step
+        distance = ((x - grid_x) ** 2 + (y - grid_y) ** 2) ** 0.5
+        if distance <= tolerance:
+            matched_points.add((col, row))
+            error += distance
+
+    # 命中棋子越多越好；误差只作为同分时的细微排序。
+    return len(matched_points), -error
 
 def aspect_region(img, target_ratio):
     height, width = img.shape[:2]
@@ -173,11 +238,10 @@ def pieces_recognition(img, gray, param, x_array=None, y_array=None):
 
             # 根据游戏平台选择对比图片
             platform = param['platform']
-            path_str = ''
             if platform == 'JJ':
-                path_str = './app/images/jj'
+                path_str = os.path.join(config.PIECE_IMAGE_HOME, 'jj')
             else:
-                path_str = './app/images/tiantian'
+                path_str = os.path.join(config.PIECE_IMAGE_HOME, 'tiantian')
             best_match, best_score = find_best_match(img[y1:y2+1,x1:x2+1], path_str)  
             if best_match is None:
                 raise RecognitionError(f"未匹配到棋子: 平台={platform}, 颜色={color}, 坐标=({x},{y}), 分数={best_score}")

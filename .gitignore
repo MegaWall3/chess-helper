@@ -3,6 +3,7 @@
 __pycache__/
 Pikafish/
 app/uploads/
+cache/
 
 *.py[cod]
 *$py.class
