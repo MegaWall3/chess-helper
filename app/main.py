@@ -11,11 +11,7 @@ def main(img_path, param):
     # 预处理 : 把共同的图像处理操作抽出来,当前只有灰度化是共用的
     image, gray = recognition.pre_processing_image(img_path)
 
-    # 识别棋盘
-    x_array, y_array = recognition.board_recognition(image, gray)
-
-    # 识别棋子 
-    pieces = recognition.pieces_recognition(image, gray, param, x_array, y_array)
+    x_array, y_array, pieces = recognize_board_and_pieces(image, gray, param)
 
     # 棋子位置
     position, is_red = recognition.calculate_pieces_position(x_array, y_array, pieces) # 按原始位置排列的二维数组
@@ -67,6 +63,11 @@ def format_moves(best_move, analysis, board_array, is_red):
     for index, move in enumerate(moves[:2]):
         chinese_moves.append(f"{labels[index]}{utils.convert_move_to_chinese(move, board_array, is_red)}")
     return " ".join(chinese_moves)
+
+def recognize_board_and_pieces(image, gray, param):
+    x_array, y_array = recognition.cached_board_recognition(image, gray)
+    pieces = recognition.pieces_recognition(image, gray, param, x_array, y_array)
+    return x_array, y_array, pieces
 
 
     

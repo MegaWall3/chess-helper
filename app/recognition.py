@@ -7,6 +7,8 @@ from. import utils
 class RecognitionError(Exception):
     pass
 
+board_cache = None
+
 def show_image(name, image):
     # 显示结果  
     cv2.imshow(name, image)  
@@ -23,6 +25,20 @@ def pre_processing_image(img_path):
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) 
 
     return img, gray
+
+# 棋盘坐标只缓存在进程内存中，不写 board.json。
+def cached_board_recognition(img, gray):
+    global board_cache
+    if board_cache is not None:
+        return board_cache
+
+    x_array, y_array = board_recognition(img, gray)
+    board_cache = (x_array, y_array)
+    return x_array, y_array
+
+def invalidate_board_cache():
+    global board_cache
+    board_cache = None
 
 # 识别棋盘
 def board_recognition(img, gray):
@@ -288,32 +304,24 @@ def check_chess_piece_color_v2(img):
     if hsv is None or hsv.size == 0:  
         print(f"Error: Failed to convert image to HSV (shape before: {img.shape})")  
         return None  # 同样，返回特殊值或抛出异常 
-    
-    # 定义多个红色的HSV阈值范围  
-    red_ranges = [  
-        ([0, 50, 50], [10, 255, 255]),  # 浅红色  
-        ([160, 50, 50], [180, 255, 255]),  # 深红色（跨越了180度的边界）  
-        ([0, 100, 100], [10, 255, 255])  # 中等红色  
-    ]  
-  
-    # 初始化红色掩码  
-    red_mask = np.zeros_like(hsv[:, :, 0])  
-  
-    # 遍历每个红色范围并更新掩码  
-    for lower, upper in red_ranges:  
-        lower = np.array(lower, dtype=np.uint8)  
-        upper = np.array(upper, dtype=np.uint8)  
-        red_mask_temp = cv2.inRange(hsv, lower, upper)  
-        red_mask = cv2.bitwise_or(red_mask, red_mask_temp)  
-  
-    # 假设黑色通过亮度检测（在灰度图中）  
+
+    height, width = hsv.shape[:2]
+    yy, xx = np.ogrid[:height, :width]
+    center_mask = ((xx - width / 2) ** 2 + (yy - height / 2) ** 2 <= (min(height, width) * 0.34) ** 2)
+    center_mask = center_mask.astype(np.uint8) * 255
+
+    # 只看棋子内圈文字区域，避免外圈木纹、阴影把红棋误判成黑棋。
+    red_mask = cv2.inRange(hsv, np.array([0, 70, 20], dtype=np.uint8), np.array([17, 255, 210], dtype=np.uint8))
+    red_mask = cv2.bitwise_or(
+        red_mask,
+        cv2.inRange(hsv, np.array([150, 70, 20], dtype=np.uint8), np.array([180, 255, 210], dtype=np.uint8))
+    )
+    red_mask = cv2.bitwise_and(red_mask, center_mask)
+
+    # 黑棋文字在内圈里亮度明显更低；木质背景的红黄色不计入黑棋笔画。
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)  
-    _, black_mask = cv2.threshold(gray, 50, 255, cv2.THRESH_BINARY_INV)  # 假设亮度低于50的为黑色  
-  
-    # 形态学操作去除噪点  
-    kernel = np.ones((5, 5), np.uint8)  
-    red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel)  
-    black_mask = cv2.morphologyEx(black_mask, cv2.MORPH_OPEN, kernel)  
+    black_mask = cv2.inRange(gray, 0, 115)
+    black_mask = cv2.bitwise_and(black_mask, center_mask)
   
     # 计算红色和黑色区域的面积  
     red_area = cv2.countNonZero(red_mask)  
