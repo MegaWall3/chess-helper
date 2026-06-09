@@ -16,7 +16,7 @@ def main(img_path, param):
     x_array, y_array = recognition.board_recognition(image, gray)
 
     # 识别棋子 
-    pieces = recognition.pieces_recognition(image, gray, param)
+    pieces = recognition.pieces_recognition(image, gray, param, x_array, y_array)
 
     # 棋子位置
     position, is_red = recognition.calculate_pieces_position(x_array, y_array, pieces) # 按原始位置排列的二维数组
@@ -34,13 +34,27 @@ def main(img_path, param):
         print(row)
 
     # 向引擎发送命令
-    move, fen = engine.get_best_move(fen_str, is_red, param)
+    move, fen, analysis = engine.get_best_move(fen_str, is_red, param)
     print(f'{fen}\n{move}')
+    if len(move) != 4 or not move[0].isalpha() or not move[1].isdigit() or not move[2].isalpha() or not move[3].isdigit():
+        return f"分析失败: 引擎未返回有效走法\n{move}"
 
     # 发送通知
     info = utils.convert_move_to_chinese(move, board_array, is_red)
+    second_line = format_analysis(analysis)
+    if second_line:
+        info = f"{info}\n{second_line}"
     # routes.bark_notification(info)
     return info
+
+def format_analysis(analysis):
+    if not analysis:
+        return ""
+
+    if "mate_text" in analysis:
+        return analysis["mate_text"]
+
+    return analysis.get("score_text", "")
 
 
     

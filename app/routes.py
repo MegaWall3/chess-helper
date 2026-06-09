@@ -43,7 +43,11 @@ def upload_file():
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)  
         image.save(filepath)  
         # print(f"param数据:\n{param_data} \n图片路径: {filepath}")
-        info = main.main(filepath, param_data)
+        # 保持 JSON 响应，方便移动端或快捷指令读取错误信息。
+        try:
+            info = main.main(filepath, param_data)
+        except Exception as error:
+            info = f"分析失败: {error}"
         # print(f'{info}\n')
         return jsonify({"message": info})
 
@@ -153,4 +157,3 @@ def send_engine_ucinewgame():
 #         json.dump(data, file)
 #     send_engine_ucinewgame()
 #     return jsonify({"message": data})
-

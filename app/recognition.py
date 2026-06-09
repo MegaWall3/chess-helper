@@ -2,7 +2,9 @@ import cv2
 import numpy as np
 import os
 from. import utils
-import json
+
+class RecognitionError(Exception):
+    pass
 
 def show_image(name, image):
     # 显示结果  
@@ -21,30 +23,11 @@ def pre_processing_image(img_path):
 
     return img, gray
 
-# 获取本地棋盘数据
-def get_board_data():
-    x_array = []
-    y_array = []
-    error = ''
-    try:
-        # 尝试读取 JSON 文件
-        with open('./app/json/board.json', 'r') as file:
-            data = json.load(file)
-
-        # 提取横坐标和纵坐标
-        x_array = data["x"]
-        y_array = data["y"]
-
-        # print("读取的横坐标：", x_array)
-        # print("读取的纵坐标：", y_array)
-    except FileNotFoundError:
-        error = '文件未找到'
-        print(error)
-    return x_array, y_array, error
 # 识别棋盘
 def board_recognition(img, gray):
-    x_arr, y_arr, error = get_board_data()
-    if not error: return x_arr, y_arr
+    inferred = infer_board_from_piece_circles(img, gray)
+    if inferred is not None:
+        return inferred
 
     # 高斯模糊  
     gaus = cv2.GaussianBlur(gray, (5, 5), 0)  
@@ -91,20 +74,57 @@ def board_recognition(img, gray):
     # 显示结果 
     # show_image('Detected Lines', black_img) 
     # print(f"横坐标:{x_array}\n 纵坐标:{y_array}")
-    # 将数组组合成一个字典
-    data = {
-        "x": x_array,
-        "y": y_array
-    }
-
-    # 写入 JSON 文件
-    with open('./app/json/board.json', 'w') as file:
-        json.dump(data, file)
 
     return x_array, y_array
 
+def infer_board_from_piece_circles(img, gray):
+    width = img.shape[1]
+    min_radius = int(0.8 * width / 9 / 2)
+    max_radius = int(width / 9 / 2)
+    min_dist = int(0.8 * width / 9)
+    circles = cv2.HoughCircles(gray, cv2.HOUGH_GRADIENT, 1, min_dist, param1=50, param2=30, minRadius=min_radius, maxRadius=max_radius)
+    if circles is None:
+        return None
+
+    circles = np.round(circles[0, :]).astype("int")
+    # 长截图只取 9:16 主区域推断棋盘，避开底部操作区。
+    region = aspect_region(img, 9 / 16)
+    return infer_board_from_circles(circles, region)
+
+
+def infer_board_from_circles(circles, region):
+    board_circles = [(x, y, r) for x, y, r in circles if point_in_region(x, y, region)]
+    if len(board_circles) < 4:
+        return None
+
+    x_min = min(x for x, _, _ in board_circles)
+    x_max = max(x for x, _, _ in board_circles)
+    y_min = min(y for _, y, _ in board_circles)
+    y_max = max(y for _, y, _ in board_circles)
+    x_step = (x_max - x_min) / 8
+    y_step = (y_max - y_min) / 9
+
+    x_array = [round(x_min + x_step * i) for i in range(9)]
+    y_array = [round(y_min + y_step * i) for i in range(10)]
+    return x_array, y_array
+
+def aspect_region(img, target_ratio):
+    height, width = img.shape[:2]
+    current_ratio = width / height
+    if current_ratio >= target_ratio:
+        region_width = int(height * target_ratio)
+        x_min = (width - region_width) // 2
+        return x_min, 0, x_min + region_width, height
+
+    region_height = int(width / target_ratio)
+    return 0, 0, width, min(height, region_height)
+
+def point_in_region(x, y, region):
+    x_min, y_min, x_max, y_max = region
+    return x_min <= x <= x_max and y_min <= y <= y_max
+
 # 识别棋子
-def pieces_recognition(img, gray, param):
+def pieces_recognition(img, gray, param, x_array=None, y_array=None):
 
     # 模糊处理，不管是用mediaBlur还是GaussianBlur, 实际发现这不是必要的。用霍夫圆检测，直接使用灰度图也一样能找出来，可能棋子的圆相对规范的原因？
     #blur = cv2.medianBlur(gray, 5)
@@ -122,9 +142,16 @@ def pieces_recognition(img, gray, param):
     pieces = []
     if circles is not None:
         circles = np.round(circles[0, :]).astype("int")
+        # 只保留棋盘范围内的圆，避免把界面按钮当成棋子。
+        board_bounds = board_region_bounds(x_array, y_array)
         # print("Total circles", len(circles))
         
         for idx, (x, y, r) in enumerate(circles):  # index 用来后面存图片比对用的
+            if board_bounds is not None:
+                x_min_bound, x_max_bound, y_min_bound, y_max_bound = board_bounds
+                if not (x_min_bound <= x <= x_max_bound and y_min_bound <= y <= y_max_bound):
+                    continue
+
             # 在图像上画圆
             # cv2.circle(img, (x, y), r, (0, 255, 0), 2)
 
@@ -152,12 +179,27 @@ def pieces_recognition(img, gray, param):
             else:
                 path_str = './app/images/tiantian'
             best_match, best_score = find_best_match(img[y1:y2+1,x1:x2+1], path_str)  
+            if best_match is None:
+                raise RecognitionError(f"未匹配到棋子: 平台={platform}, 颜色={color}, 坐标=({x},{y}), 分数={best_score}")
             pieces.append((x, y, r, utils.cut_substring(best_match)))
             # print(f"棋子圆心与半径:({x},{y}), {r},Best match: {utils.cut_substring(best_match)} score {best_score}")
 
             # show_image('Pieces', img[y1:y2,x1:x2])
     # show_image('Circles',img)
     return pieces
+
+def board_region_bounds(x_array, y_array):
+    if x_array is None or y_array is None or len(x_array) != 9 or len(y_array) != 10:
+        return None
+
+    x_margin = (max(x_array) - min(x_array)) / 8 / 2
+    y_margin = (max(y_array) - min(y_array)) / 9 / 2
+    return (
+        min(x_array) - x_margin,
+        max(x_array) + x_margin,
+        min(y_array) - y_margin,
+        max(y_array) + y_margin,
+    )
 
 #比较两张图片的特征点,返回相似度
 def compare_feature(img1,img2):
