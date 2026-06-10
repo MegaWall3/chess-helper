@@ -8,6 +8,7 @@ class RecognitionError(Exception):
     pass
 
 board_cache = None
+board_cache_was_hit = False
 
 def show_image(name, image):
     # 显示结果  
@@ -28,17 +29,29 @@ def pre_processing_image(img_path):
 
 # 棋盘坐标只缓存在进程内存中，不写 board.json。
 def cached_board_recognition(img, gray):
-    global board_cache
+    global board_cache, board_cache_was_hit
     if board_cache is not None:
+        board_cache_was_hit = True
         return board_cache
 
+    board_cache_was_hit = False
     x_array, y_array = board_recognition(img, gray)
     board_cache = (x_array, y_array)
     return x_array, y_array
 
 def invalidate_board_cache():
-    global board_cache
+    global board_cache, board_cache_was_hit
     board_cache = None
+    board_cache_was_hit = False
+
+def board_cache_debug():
+    if board_cache is None:
+        return "棋盘坐标: 无缓存"
+
+    x_array, y_array = board_cache
+    if board_cache_was_hit:
+        return f"棋盘坐标: 缓存命中 x={x_array} y={y_array}"
+    return f"棋盘坐标: x={x_array} y={y_array}"
 
 # 识别棋盘
 def board_recognition(img, gray):

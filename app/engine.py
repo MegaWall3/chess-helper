@@ -43,6 +43,7 @@ def init_engine():
     setoption(f'setoption name EvalFile value {pikafish_files.resolve_nnue_file()}')
     setoption('setoption name UCI_ShowWDL value true')
     isready()
+    print("Pikafish 引擎已就绪")
 
 def is_engine_alive():
     return pikafish is not None and pikafish.poll() is None
@@ -95,8 +96,10 @@ def get_best_move(fen, side, parameter):
                 break
             except (BrokenPipeError, OSError, EngineError, pikafish_files.PikafishFileError) as error:
                 last_error = error
+                print(f"Pikafish 引擎错误: {error}")
                 restart_engine()
         else:
+            print(f"Pikafish 引擎启动失败: {last_error}")
             return f"No valid bestmove: {last_error}", fen_string, {}
 
     if not lines:

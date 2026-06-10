@@ -20,6 +20,21 @@ def parse_engine_info(lines, side):
     if "depth" in latest:
         result["depth"] = latest[latest.index("depth") + 1]
 
+    if "seldepth" in latest:
+        result["seldepth"] = latest[latest.index("seldepth") + 1]
+
+    if "time" in latest:
+        result["time_ms"] = latest[latest.index("time") + 1]
+
+    if "nodes" in latest:
+        result["nodes"] = latest[latest.index("nodes") + 1]
+
+    if "nps" in latest:
+        result["nps"] = latest[latest.index("nps") + 1]
+
+    if "hashfull" in latest:
+        result["hashfull"] = latest[latest.index("hashfull") + 1]
+
     if "score" in latest:
         score_index = latest.index("score")
         score_type = latest[score_index + 1]
@@ -88,3 +103,41 @@ def format_wdl(wdl):
         return ""
 
     return f"胜/平/负 {wins / total * 100:.1f}%/{draws / total * 100:.1f}%/{losses / total * 100:.1f}%"
+
+def format_search_fields_cn(engine_analysis):
+    if not engine_analysis:
+        return "无搜索信息"
+
+    fields = []
+    if "depth" in engine_analysis:
+        depth_text = f"深度={engine_analysis['depth']}"
+        if "seldepth" in engine_analysis:
+            depth_text += f"({engine_analysis['seldepth']})"
+        fields.append(depth_text)
+    if "time_ms" in engine_analysis:
+        fields.append(f"用时={engine_analysis['time_ms']}毫秒")
+    if "nodes" in engine_analysis:
+        nodes_text = f"节点={format_compact_number(engine_analysis['nodes'])}"
+        if "nps" in engine_analysis:
+            nodes_text += f"({format_compact_number(engine_analysis['nps'])}/秒)"
+        fields.append(nodes_text)
+    if "hashfull" in engine_analysis:
+        fields.append(f"哈希占用={format_hashfull(engine_analysis['hashfull'])}")
+    return " ".join(fields) if fields else "无搜索信息"
+
+def format_hashfull(hashfull):
+    try:
+        return f"{int(hashfull) / 10:.1f}%"
+    except (TypeError, ValueError):
+        return str(hashfull)
+
+def format_compact_number(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+
+    for suffix, factor in (("B", 1_000_000_000), ("M", 1_000_000), ("K", 1_000)):
+        if abs(number) >= factor:
+            return f"{number / factor:.1f}{suffix}"
+    return str(int(number))
