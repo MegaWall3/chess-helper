@@ -48,10 +48,9 @@ def board_cache_debug():
     if board_cache is None:
         return "棋盘坐标: 无缓存"
 
-    x_array, y_array = board_cache
     if board_cache_was_hit:
-        return f"棋盘坐标: 缓存命中 x={x_array} y={y_array}"
-    return f"棋盘坐标: x={x_array} y={y_array}"
+        return "棋盘坐标: 缓存命中"
+    return "棋盘坐标: 新识别"
 
 # 识别棋盘
 def board_recognition(img, gray):
@@ -395,11 +394,22 @@ def calculate_pieces_position(x_array, y_array, circles):
     
     # 初始化pieceArray  
     pieceArray = [["-"] * len(x_array) for _ in range(len(y_array))]  
+    pieceDistanceArray = [[float("inf")] * len(x_array) for _ in range(len(y_array))]  
       
     for cx, cy, radius, name in circles:  
         # 找到最接近的竖线和横线的索引  
         nearest_x_index = find_nearest_index(cx, x_array)  
         nearest_y_index = find_nearest_index(cy, y_array)  
+        nearest_x = x_array[nearest_x_index]
+        nearest_y = y_array[nearest_y_index]
+        tolerance = min(grid_step(x_array), grid_step(y_array)) * 0.30
+        if abs(cx - nearest_x) > tolerance or abs(cy - nearest_y) > tolerance:
+            print(f"忽略偏离棋盘交点的圆: ({cx},{cy}) -> ({nearest_x},{nearest_y}) {name}")
+            continue
+        distance = ((cx - nearest_x) ** 2 + (cy - nearest_y) ** 2) ** 0.5
+        if distance >= pieceDistanceArray[nearest_y_index][nearest_x_index]:
+            print(f"忽略同格较远的圆: ({cx},{cy}) -> ({nearest_x},{nearest_y}) {name}")
+            continue
           
         # 可选：检查圆心是否“足够接近”某条竖线或横线（使用半径作为阈值）  
         # 这里我们简单地标记最近的竖线和横线，不考虑阈值  
@@ -407,6 +417,7 @@ def calculate_pieces_position(x_array, y_array, circles):
         # 在pieceArray中标记圆心位置  
         # 注意：这里我们假设要在一个“单元格”中标记圆心，即一个特定的(x, y)索引  
         pieceArray[nearest_y_index][nearest_x_index] = name  # 或者使用其他标记方式  
+        pieceDistanceArray[nearest_y_index][nearest_x_index] = distance
           
         # 如果想要表示圆心的范围（例如，使用半径画圆），则需要更复杂的逻辑  
         # 这通常涉及到在pieceArray中设置多个单元格，可能还需要额外的数据结构或算法  
@@ -423,6 +434,11 @@ def calculate_pieces_position(x_array, y_array, circles):
             break
 
     return pieceArray, is_red   
+
+def grid_step(points):
+    if len(points) < 2:
+        return 0
+    return (max(points) - min(points)) / (len(points) - 1)
   
 # 测试棋子的HVS范围并打印
 # def measure_color_range(roi):  

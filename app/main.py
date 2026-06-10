@@ -6,6 +6,9 @@ import config
 
 last_position = None
 last_board_array = None
+last_score_cp = None
+last_score_delta_text = ""
+last_client_info = None
 
 def main(img_path, param):  
     # 棋局图像  
@@ -15,13 +18,12 @@ def main(img_path, param):
     image, gray = recognition.pre_processing_image(img_path)
 
     x_array, y_array, pieces = recognize_board_and_pieces(image, gray, param)
-    print(color_status_text(recognition.board_cache_debug()))
 
     # 棋子位置
     position, is_red = recognition.calculate_pieces_position(x_array, y_array, pieces) # 按原始位置排列的二维数组
 
     # 检查局面是否变化
-    global last_position, last_board_array
+    global last_position, last_board_array, last_client_info
     if param['autoModel'] == 'On':
         if utils.check_repeat_position(position, last_position, is_red):
             return 'repeat'
@@ -29,10 +31,14 @@ def main(img_path, param):
 
     # 转成 FEN字符串
     fen_str, board_array = utils.switch_to_fen(position, is_red)
-    position_change_debug = format_position_change_debug(last_board_array, board_array)
-    if position_change_debug:
-        print(color_status_text(position_change_debug))
+    previous_board_array = last_board_array
+    is_same_board = previous_board_array == board_array
+    print(color_status_text(format_board_status(recognition.board_cache_debug(), previous_board_array, board_array, bool(last_client_info))))
     last_board_array = copy_board(board_array)
+
+    if is_same_board and last_client_info:
+        return last_client_info
+
     print(format_board_debug(position, is_red))
 
     # 向引擎发送命令
@@ -42,12 +48,14 @@ def main(img_path, param):
 
     # 发送通知
     second_line = format_analysis(analysis)
-    move_line = format_moves(move, analysis, board_array, is_red)
+    branch_lines = build_branch_lines(move, analysis, board_array, is_red, param)
+    score_delta_text = format_score_delta(analysis, is_red, previous_board_array, board_array)
     print(color_status_text(format_engine_debug(analysis)))
     if second_line:
-        print(color_score_text(second_line))
-    info = f"{second_line}\n{move_line}" if second_line else move_line
-    print(format_branch_debug(move, analysis, board_array, is_red, param))
+        print(color_score_text(format_score_with_delta(second_line, score_delta_text)))
+    info = format_client_branch_info(branch_lines, format_client_score(analysis, is_red), score_delta_text)
+    last_client_info = info
+    print(format_branch_debug(branch_lines))
     # routes.bark_notification(info)
     return info
 
@@ -72,6 +80,64 @@ def format_moves(best_move, analysis, board_array, is_red):
         chinese_moves.append(utils.convert_move_to_chinese(move, board_array, is_red))
     return " ".join(chinese_moves)
 
+def format_score_delta(analysis, is_red, previous_board, current_board):
+    global last_score_cp, last_score_delta_text
+    current_score_cp = player_perspective_score_cp(analysis, is_red)
+    if current_score_cp is None:
+        return ""
+
+    previous_score_cp = last_score_cp
+    if previous_score_cp is None:
+        last_score_cp = current_score_cp
+        last_score_delta_text = ""
+        return ""
+
+    if is_suspicious_board_change(previous_board, current_board):
+        last_score_cp = current_score_cp
+        last_score_delta_text = ""
+        return ""
+
+    # 同一盘面重复分析时沿用上一次真实局面变化算出的分差。
+    if previous_board == current_board:
+        return last_score_delta_text
+
+    delta = current_score_cp - previous_score_cp
+    last_score_cp = current_score_cp
+    last_score_delta_text = f"{delta:+d}"
+    return last_score_delta_text
+
+def format_score_with_delta(score_text, score_delta_text):
+    if not score_delta_text:
+        return score_text
+    return f"{score_text}{format_delta_badge(score_delta_text)}"
+
+def player_perspective_score_cp(analysis, is_red):
+    if not analysis or "score_cp" not in analysis:
+        return None
+
+    score_cp = analysis["score_cp"]
+    # Pikafish 分数对当前行棋方为正；这里转成“我方视角”。
+    return score_cp
+
+def format_client_score(analysis, is_red):
+    if not analysis:
+        return ""
+    if "mate_text" in analysis:
+        return format_client_mate(analysis["mate"], is_red)
+    if "score_cp" not in analysis:
+        return ""
+
+    score_cp = analysis["score_cp"]
+    if score_cp == 0:
+        return "💛均势"
+
+    lead_is_red = score_cp > 0 if is_red else score_cp < 0
+    return f"{score_side_emoji(lead_is_red)}{abs(score_cp)}分"
+
+def format_client_mate(mate, is_red):
+    lead_is_red = mate > 0 if is_red else mate < 0
+    return f"{score_side_emoji(lead_is_red)}{abs(mate)}步杀"
+
 def format_engine_debug(analysis):
     return (
         f"引擎: {analysis_utils.format_search_fields_cn(analysis)} "
@@ -94,9 +160,9 @@ def format_position_change_debug(previous_board, current_board):
 
     stats = board_change_stats(previous_board, current_board)
     alerts = []
-    if stats["added"] >= 3:
+    if is_suspicious_piece_increase(stats):
         alerts.append(f"新增棋子 {stats['added']} 个")
-    if stats["change_ratio"] > 0.30:
+    if is_suspicious_change_ratio(stats):
         alerts.append(f"位置变化 {stats['change_ratio']:.1%}")
 
     if alerts:
@@ -114,6 +180,18 @@ def format_position_change_debug(previous_board, current_board):
         f"变化率={stats['change_ratio']:.1%} "
         f"新增={stats['added']} 减少={stats['removed']}"
     )
+
+def format_board_status(board_cache_text, previous_board, current_board, can_reuse):
+    if previous_board is None:
+        return board_cache_text
+
+    if previous_board == current_board:
+        change_text = "盘面变化: 未变化"
+        if can_reuse:
+            change_text += " 复用上次结果"
+        return f"{board_cache_text} {change_text}"
+
+    return f"{board_cache_text} {format_position_change_debug(previous_board, current_board)}"
 
 def board_change_stats(previous_board, current_board):
     changed_squares = 0
@@ -137,41 +215,181 @@ def board_change_stats(previous_board, current_board):
         "removed": max(0, -piece_delta),
     }
 
-def format_branch_debug(best_move, analysis, board_array, is_red, param):
+def is_suspicious_board_change(previous_board, current_board):
+    if previous_board is None:
+        return False
+
+    stats = board_change_stats(previous_board, current_board)
+    return is_suspicious_piece_increase(stats) or is_suspicious_change_ratio(stats)
+
+def is_suspicious_piece_increase(stats):
+    return stats["added"] >= 3
+
+def is_suspicious_change_ratio(stats):
+    return stats["change_ratio"] > 0.30
+
+def build_branch_lines(best_move, analysis, board_array, is_red, param):
+    pvs = analysis.get("pvs", []) if analysis else []
+    if pvs:
+        return build_branch_lines_from_pvs(
+            pvs[:2],
+            board_array,
+            is_red,
+            analysis.get("candidate_scores", []) if analysis else [],
+        )
+
     candidates = candidate_moves(best_move, analysis)
     lines = []
     line_number = 1
     for candidate_index, move in enumerate(candidates[:2], start=1):
         candidate_board = copy_board(board_array)
         move_text = display_move_text(move, candidate_board, is_red)
-        apply_move(candidate_board, move)
-
-        replies = analyze_reply_moves(candidate_board, not is_red, param)
-        if not replies:
-            lines.append(format_branch_line(line_number, move_text, is_red, "无", not is_red, "无", is_red))
-            line_number += 1
-            continue
-
-        for reply_index, reply in enumerate(replies[:2], start=1):
-            reply_text = display_move_text(reply, candidate_board, not is_red)
-
-            response_board = copy_board(candidate_board)
-            apply_move(response_board, reply)
-            responses = analyze_reply_moves(response_board, is_red, param)
-            response_text = display_move_text(responses[0], response_board, is_red) if responses else "无"
-            shown_move = move_text if reply_index == 1 else repeated_move_placeholder(move_text)
-            lines.append(
-                format_branch_line(line_number, shown_move, is_red, reply_text, not is_red, response_text, is_red)
+        lines.append(
+            branch_line(
+                line_number,
+                move_text,
+                is_red,
+                repeated_move_placeholder(),
+                not is_red,
+                repeated_move_placeholder(),
+                is_red,
+                "",
             )
-            line_number += 1
-    return "\n".join(lines) if lines else "无候选分支"
+        )
+        line_number += 1
+    return lines
 
-def format_branch_line(index, move_text, move_is_red, reply_text, reply_is_red, response_text, response_is_red):
+def build_branch_lines_from_pvs(pvs, board_array, is_red, candidate_scores):
+    lines = []
+    followup_budget = {"remaining": config.MAX_SHORT_FOLLOWUPS}
+    for index, pv_moves in enumerate(pvs, start=1):
+        pv_board = copy_board(board_array)
+        move_text = pv_move_text(pv_moves, 0, pv_board, is_red)
+        reply_text = pv_or_short_followup_text(pv_moves, 1, pv_board, not is_red, followup_budget)
+        response_text = repeated_move_placeholder()
+        if reply_text != repeated_move_placeholder():
+            response_text = pv_or_short_followup_text(pv_moves, 2, pv_board, is_red, followup_budget)
+        score_text = compact_candidate_score(candidate_scores[index - 1] if index - 1 < len(candidate_scores) else {}, is_red)
+        lines.append(branch_line(index, move_text, is_red, reply_text, not is_red, response_text, is_red, score_text))
+    return lines
+
+def pv_or_short_followup_text(pv_moves, index, board_array, is_red, followup_budget):
+    if index < len(pv_moves):
+        return pv_move_text(pv_moves, index, board_array, is_red)
+
+    if followup_budget["remaining"] <= 0:
+        return repeated_move_placeholder()
+
+    followup_budget["remaining"] -= 1
+    followup = short_followup_move(board_array, is_red)
+    if not followup:
+        return repeated_move_placeholder()
+
+    move_text = display_move_text(followup, board_array, is_red)
+    apply_move(board_array, followup)
+    return move_text
+
+def short_followup_move(board_array, is_red):
+    fen = board_to_fen(board_array)
+    short_param = {
+        "goParam": "movetime",
+        "movetime": config.SHORT_FOLLOWUP_MOVETIME,
+    }
+    move, _, _ = engine.get_best_move(fen, is_red, short_param)
+    if analysis_utils.is_valid_bestmove(move):
+        return move
+    return None
+
+def pv_move_text(pv_moves, index, board_array, is_red):
+    if index >= len(pv_moves):
+        return repeated_move_placeholder()
+
+    move = pv_moves[index]
+    move_text = display_move_text(move, board_array, is_red)
+    apply_move(board_array, move)
+    return move_text
+
+def branch_line(index, move_text, move_is_red, reply_text, reply_is_red, response_text, response_is_red, score_text=""):
+    return {
+        "index": index,
+        "move_text": move_text,
+        "move_is_red": move_is_red,
+        "reply_text": reply_text,
+        "reply_is_red": reply_is_red,
+        "response_text": response_text,
+        "response_is_red": response_is_red,
+        "score_text": score_text,
+    }
+
+def format_branch_debug(branch_lines):
+    if not branch_lines:
+        return "无候选分支"
+
+    return "\n".join(format_branch_line(line) for line in branch_lines)
+
+def format_client_branch_info(branch_lines, score_text, score_delta_text=""):
+    if not branch_lines:
+        return score_text or "无候选分支"
+
+    main_lines = client_main_branch_lines(branch_lines)
+    items = [format_client_branch_item(line, index) for index, line in enumerate(main_lines[:2], start=1)]
+    first_line = items[0] if items else ""
+    second_line = items[1] if len(items) > 1 else ""
+    has_candidate_score = any(line.get("score_text") for line in main_lines[:2])
+    if score_text and not has_candidate_score:
+        first_line = f"{first_line} {score_text}" if first_line else score_text
+    if score_delta_text:
+        first_line = f"{first_line}{format_delta_badge(score_delta_text)}" if first_line else format_delta_badge(score_delta_text)
+    return f"{first_line}\n{second_line}" if second_line else first_line
+
+def client_main_branch_lines(branch_lines):
+    return [line for line in branch_lines[:4] if line["move_text"] != repeated_move_placeholder(line["move_text"])]
+
+def format_client_branch_item(line, index=None):
+    label_index = index if index is not None else line["index"]
+    score_text = f" {line['score_text']}" if line.get("score_text") else ""
     return (
-        f"{branch_number_label(index)} "
-        f"{pad_colored_move(move_text, move_is_red)} "
-        f"{pad_colored_move(reply_text, reply_is_red)} "
-        f"{pad_colored_move(response_text, response_is_red)}"
+        f"{branch_number_label(label_index)}"
+        f"{line['move_text']}"
+        f"{side_emoji(line['reply_is_red'])}{line['reply_text']}"
+        f"{side_emoji(line['response_is_red'])}{line['response_text']}"
+        f"{score_text}"
+    )
+
+def compact_candidate_score(score, is_red):
+    if not score:
+        return ""
+    if "mate_text" in score:
+        return format_client_mate(score["mate"], is_red)
+    if "score_cp" not in score:
+        return ""
+
+    score_cp = score["score_cp"]
+    if score_cp == 0:
+        return "💛均势"
+
+    lead_is_red = score_cp > 0 if is_red else score_cp < 0
+    return f"{score_side_emoji(lead_is_red)}{abs(score_cp)}分"
+
+def format_delta_badge(score_delta_text):
+    if not score_delta_text:
+        return ""
+    return f"({score_delta_text})"
+
+def side_emoji(is_red):
+    return "🔴" if is_red else "🔵"
+
+def score_side_emoji(is_red):
+    return "❤️" if is_red else "💙"
+
+def format_branch_line(line):
+    score_text = f" {line['score_text']}" if line.get("score_text") else ""
+    return (
+        f"{branch_number_label(line['index'])} "
+        f"{pad_colored_move(line['move_text'], line['move_is_red'])} "
+        f"{pad_colored_move(line['reply_text'], line['reply_is_red'])} "
+        f"{pad_colored_move(line['response_text'], line['response_is_red'])}"
+        f"{score_text}"
     )
 
 def branch_number_label(index):
@@ -189,7 +407,7 @@ def pad_display_text(text, target_width):
     width = visible_width(text)
     return text + " " * max(0, target_width - width)
 
-def repeated_move_placeholder(move_text):
+def repeated_move_placeholder(move_text=None):
     return "－－－－"
 
 def candidate_moves(best_move, analysis):
@@ -205,7 +423,7 @@ def analyze_reply_moves(board_array, side, param):
 
 def format_move_for_board(move, board_array, is_red):
     if not analysis_utils.is_valid_bestmove(move):
-        return move or "无"
+        return move or repeated_move_placeholder()
     try:
         return utils.convert_move_to_chinese(move, board_array, is_red)
     except (KeyError, IndexError, ValueError):

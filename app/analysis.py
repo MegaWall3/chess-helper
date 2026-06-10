@@ -16,6 +16,8 @@ def parse_engine_info(lines, side):
     latest = latest_by_multipv.get(1, info_lines[-1]).split()
     result = {"raw": info_lines[-1]}
     result["moves"] = parse_candidate_moves(latest_by_multipv)
+    result["pvs"] = parse_candidate_pvs(latest_by_multipv)
+    result["candidate_scores"] = parse_candidate_scores(latest_by_multipv, side)
 
     if "depth" in latest:
         result["depth"] = latest[latest.index("depth") + 1]
@@ -70,15 +72,47 @@ def collect_latest_by_multipv(info_lines):
     return latest_by_multipv
 
 def parse_candidate_moves(latest_by_multipv):
-    moves = []
+    return [pv[0] for pv in parse_candidate_pvs(latest_by_multipv) if pv]
+
+def parse_candidate_pvs(latest_by_multipv):
+    pvs = []
     for multipv in sorted(latest_by_multipv):
         parts = latest_by_multipv[multipv].split()
         if "pv" not in parts:
             continue
-        move = parts[parts.index("pv") + 1]
-        if is_valid_bestmove(move):
-            moves.append(move)
-    return moves
+
+        pv_moves = [
+            move for move in parts[parts.index("pv") + 1:]
+            if is_valid_bestmove(move)
+        ]
+        if pv_moves:
+            pvs.append(pv_moves)
+    return pvs
+
+def parse_candidate_scores(latest_by_multipv, side):
+    scores = []
+    for multipv in sorted(latest_by_multipv):
+        parts = latest_by_multipv[multipv].split()
+        if "score" not in parts:
+            scores.append({})
+            continue
+
+        score_index = parts.index("score")
+        score_type = parts[score_index + 1]
+        score_value = int(parts[score_index + 2])
+        if score_type == "cp":
+            scores.append({
+                "score_cp": score_value,
+                "score_text": format_score(score_value, side),
+            })
+        elif score_type == "mate":
+            scores.append({
+                "mate": score_value,
+                "mate_text": format_mate(score_value, side),
+            })
+        else:
+            scores.append({})
+    return scores
 
 def format_score(score_cp, side):
     if score_cp == 0:
