@@ -1,0 +1,15 @@
+name: chess-helper
+
+services:
+  chess-helper:
+    build:
+      context: .
+      args:
+        PYTHON_VERSION: "3.14"
+    image: chess-helper:latest
+    container_name: chess-helper
+    restart: unless-stopped
+    ports:
+      - "5050:5050"
+    volumes:
+      - ./cache:/app/cache

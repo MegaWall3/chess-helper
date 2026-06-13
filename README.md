@@ -31,23 +31,40 @@ cd chess-helper
 pip install -r requirements.txt
 ```
 
-3. 确保Pikafish引擎可执行：
+3. 准备 Pikafish 引擎：
    > Pikafish编译及用法可参考：https://github.com/official-pikafish/Pikafish
+   > 将解压后的 Pikafish 文件放到项目根目录的 `Pikafish/`，并确保当前系统对应的可执行文件有执行权限。
 ```bash
-chmod +x ./app/Pikafish/src/pikafish
+chmod +x ./Pikafish/MacOS/*
 ```
 
 4. 运行应用：
 ```bash
-python app/main.py
+python run.py
 ```
 
 ## 使用说明
 
-1. 在iPhone手机上创建快捷指令，添加截图操作
-2. 上传截图（可在手机辅助功能中设置悬浮球按钮，触发快捷指令）
-3. 系统会自动识别棋局并分析
-4. AI计算得出最佳走法，通过快捷指令的通知功能接收走法（例: 兵三进一）
+### iPhone 快捷指令配置
+
+可以在 iPhone 上创建一个快捷指令，用截图直接请求本机局域网服务。
+
+![iPhone 快捷指令配置](docs/images/iphone-shortcut-upload.png)
+
+1. 添加「截屏」操作。
+2. 添加「获取 URL 内容」操作。
+   - URL：`http://电脑局域网IP:5050/upload`
+   - 方法：`POST`
+   - 请求体：`文件`
+   - 文件：选择上一步的「截屏」
+3. 添加「获取字典值」操作。
+   - 字典：选择上一步返回的「URL 的内容」
+   - 键：`message`
+4. 添加「显示通知」操作。
+   - 标题：选择上一步取出的「字典值」
+   - 播放声音：按需开启
+
+电脑和 iPhone 需要连接同一个局域网。电脑局域网 IP 可以在服务启动日志里查看，例如 `http://192.168.3.5:5050/upload`。
 
 ## 项目结构
 

@@ -2,14 +2,15 @@ from flask import Flask, request, jsonify
 import requests
 import os
 import json
+from datetime import datetime
 import config
 from. import main
 
 app = Flask(__name__) #创建应用,谁有这句代码 谁就是入口
 
-print(os.getcwd()) # 如果相对路径出问题,就看看cwd的打印,以这里为基点配置相对路径
+print(config.BASE_DIR) # 资源路径都以项目根目录为基准
 
-# 上传图片只作为本次分析的缓存文件保存。
+# 上传图片按时间留存最近几张，方便回看识别错位的原图。
 app.config['UPLOAD_FOLDER'] = config.CACHE_FOLDER
 if not os.path.exists(config.CACHE_FOLDER):
     os.makedirs(config.CACHE_FOLDER)
@@ -44,8 +45,9 @@ def read_multipart_upload():
         return None, {}
 
     image = request.files['image']
-    filepath = os.path.join(app.config['UPLOAD_FOLDER'], image.filename)
+    filepath = upload_cache_path(image.filename)
     image.save(filepath)
+    cleanup_upload_history()
     return filepath, param_data
 
 def read_body_upload():
@@ -60,10 +62,31 @@ def read_body_upload():
         "movetime": request.args.get("movetime", config.DEFAULT_MOVETIME),
         "depth": request.args.get("depth", config.DEFAULT_DEPTH),
     }
-    filepath = os.path.join(app.config['UPLOAD_FOLDER'], 'upload.png')
+    filepath = upload_cache_path('upload.png')
     with open(filepath, 'wb') as file:
         file.write(image_data)
+    cleanup_upload_history()
     return filepath, param_data
+
+def upload_cache_path(filename):
+    extension = os.path.splitext(filename)[1].lower() or '.png'
+    if extension not in ('.png', '.jpg', '.jpeg'):
+        extension = '.png'
+    timestamp = datetime.now().strftime('%Y%m%d-%H%M%S-%f')[:-3]
+    return os.path.join(app.config['UPLOAD_FOLDER'], f'upload-{timestamp}{extension}')
+
+def cleanup_upload_history():
+    uploads = [
+        os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        for filename in os.listdir(app.config['UPLOAD_FOLDER'])
+        if filename.startswith('upload-') and filename.lower().endswith(('.png', '.jpg', '.jpeg'))
+    ]
+    uploads.sort(key=os.path.getmtime, reverse=True)
+    for filepath in uploads[config.UPLOAD_HISTORY_LIMIT:]:
+        try:
+            os.remove(filepath)
+        except OSError:
+            pass
 
 # 使用'bark'通知
 @app.route('/bark_notification')

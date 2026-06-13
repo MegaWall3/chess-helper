@@ -2,7 +2,9 @@ from. import recognition
 from. import utils
 from. import engine
 from. import analysis as analysis_utils
+from. import pieces as piece_utils
 import config
+import os
 
 last_position = None
 last_board_array = None
@@ -13,6 +15,7 @@ last_client_info = None
 def main(img_path, param):  
     # 棋局图像  
     # img_path = './cache/upload.png'
+    print(color_status_text(f"本次图片: {os.path.basename(img_path)}"))
 
     # 预处理 : 把共同的图像处理操作抽出来,当前只有灰度化是共用的
     image, gray = recognition.pre_processing_image(img_path)
@@ -40,6 +43,10 @@ def main(img_path, param):
         return last_client_info
 
     print(format_board_debug(position, is_red))
+    board_error = piece_utils.validate_board_array(board_array)
+    if board_error:
+        print(color_text(f"识别异常: {board_error}", "33"))
+        return f"分析失败: {board_error}"
 
     # 向引擎发送命令
     move, fen, analysis = engine.get_best_move(fen_str, is_red, param)
@@ -493,12 +500,7 @@ def format_board_debug(board_array, is_red):
     return "\n".join(lines)
 
 def piece_label(piece):
-    names = {
-        "r": "车", "n": "马", "b": "象", "a": "士", "k": "将", "c": "炮", "p": "卒",
-        "R": "车", "N": "马", "B": "相", "A": "仕", "K": "帅", "C": "炮", "P": "兵",
-        "-": "－",
-    }
-    return names.get(piece, piece)
+    return piece_utils.piece_label(piece)
 
 def bottom_scale(is_red):
     if is_red:

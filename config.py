@@ -1,14 +1,16 @@
 import os
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # 本机局域网运行的默认配置集中放这里，避免后续全项目搜索零散数字。
 SERVER_HOST = '0.0.0.0'
 SERVER_PORT = 5050
 DEBUG = True
 
-PIKAFISH_HOME = './Pikafish'
-CACHE_FOLDER = './cache/'
-PIECE_IMAGE_HOME = './images'
+PIKAFISH_HOME = os.path.join(BASE_DIR, 'Pikafish')
+CACHE_FOLDER = os.path.join(BASE_DIR, 'cache')
+UPLOAD_HISTORY_LIMIT = 10
+PIECE_IMAGE_HOME = os.path.join(BASE_DIR, 'images')
 ENGINE_THREADS = (os.cpu_count() or 1) * 2
 ENGINE_HASH_MB = 256
 ENGINE_MULTI_PV = 2
