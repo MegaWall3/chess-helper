@@ -9,6 +9,9 @@ class RecognitionError(Exception):
 
 board_cache = None
 board_cache_was_hit = False
+MIN_PIECE_INK_STRENGTH = 0.18
+MIN_CIRCLE_COMPLETENESS = 0.40
+MIN_TEMPLATE_SCORE = 12
 
 def show_image(name, image):
     # 显示结果  
@@ -231,19 +234,19 @@ def pieces_recognition(img, gray, param, x_array=None, y_array=None):
     # 检测圆形. 参数的设置很重要。它决定了哪些圆命中出来。参数设置有最小最大半径，以及各圆心间距等
     circles = cv2.HoughCircles(gray, cv2.HOUGH_GRADIENT, 1, minDist, param1=50, param2=30, minRadius=minRadius, maxRadius=maxRadius)
     
-    # 绘制圆形
     pieces = []
     if circles is not None:
         circles = np.round(circles[0, :]).astype("int")
         # 只保留棋盘范围内的圆，避免把界面按钮当成棋子。
         board_bounds = board_region_bounds(x_array, y_array)
+        circles = circles_in_board_bounds(circles, board_bounds)
+        median_radius = median_circle_radius(circles)
         # print("Total circles", len(circles))
         
         for idx, (x, y, r) in enumerate(circles):  # index 用来后面存图片比对用的
-            if board_bounds is not None:
-                x_min_bound, x_max_bound, y_min_bound, y_max_bound = board_bounds
-                if not (x_min_bound <= x <= x_max_bound and y_min_bound <= y <= y_max_bound):
-                    continue
+            if not piece_radius_is_normal(r, median_radius):
+                print(f"忽略半径异常的圆: ({x},{y}) r={r}")
+                continue
 
             # 在图像上画圆
             # cv2.circle(img, (x, y), r, (0, 255, 0), 2)
@@ -255,9 +258,14 @@ def pieces_recognition(img, gray, param, x_array=None, y_array=None):
             if x2 >= img.shape[1]: x2 = img.shape[1] - 1  
             if y2 >= img.shape[0]: y2 = img.shape[0] - 1
 
+            piece_img = img[y1:y2+1,x1:x2+1]
+            if not looks_like_piece(piece_img):
+                print(f"忽略不像棋子的圆: ({x},{y}) r={r} ink={piece_ink_strength(piece_img):.3f} circle={circle_completeness(piece_img):.3f}")
+                continue
+
             # cv2.imwrite(f"chess{idx}.jpg",img[y1:y2,x1:x2]) # 切割棋子保存到本地
             # print(f"slice coordinates ({x1}, {y1}) to ({x2}, {y2}) shape {img[y1:y2+1,x1:x2+1].shape}") 
-            color = check_chess_piece_color_v2(img[y1:y2+1,x1:x2+1])
+            color = check_chess_piece_color_v2(piece_img)
             if color is None:  
                 print("Failed to determine color for this slice.")  
             # else:  
@@ -270,15 +278,102 @@ def pieces_recognition(img, gray, param, x_array=None, y_array=None):
                 path_str = os.path.join(config.PIECE_IMAGE_HOME, 'jj')
             else:
                 path_str = os.path.join(config.PIECE_IMAGE_HOME, 'tiantian')
-            best_match, best_score = find_best_match(img[y1:y2+1,x1:x2+1], path_str)  
+            best_match, best_score = find_best_match(piece_img, path_str)  
             if best_match is None:
                 raise RecognitionError(f"未匹配到棋子: 平台={platform}, 颜色={color}, 坐标=({x},{y}), 分数={best_score}")
+            if best_score < MIN_TEMPLATE_SCORE:
+                print(f"忽略模板分数过低的圆: ({x},{y}) {best_match} score={best_score}")
+                continue
             pieces.append((x, y, r, utils.cut_substring(best_match)))
             # print(f"棋子圆心与半径:({x},{y}), {r},Best match: {utils.cut_substring(best_match)} score {best_score}")
 
             # show_image('Pieces', img[y1:y2,x1:x2])
     # show_image('Circles',img)
     return pieces
+
+def circles_in_board_bounds(circles, board_bounds):
+    if board_bounds is None:
+        return circles
+
+    x_min_bound, x_max_bound, y_min_bound, y_max_bound = board_bounds
+    return np.array([
+        circle for circle in circles
+        if x_min_bound <= circle[0] <= x_max_bound and y_min_bound <= circle[1] <= y_max_bound
+    ])
+
+def median_circle_radius(circles):
+    if len(circles) == 0:
+        return None
+    return float(np.median([r for _, _, r in circles]))
+
+def piece_radius_is_normal(radius, median_radius):
+    if median_radius is None:
+        return True
+    return median_radius * 0.88 <= radius <= median_radius * 1.12
+
+def looks_like_piece(piece_img):
+    return (
+        piece_ink_strength(piece_img) >= MIN_PIECE_INK_STRENGTH
+        and circle_completeness(piece_img) >= MIN_CIRCLE_COMPLETENESS
+    )
+
+def piece_ink_strength(piece_img):
+    if piece_img is None or piece_img.size == 0:
+        return 0
+
+    hsv = cv2.cvtColor(piece_img, cv2.COLOR_BGR2HSV)
+    height, width = hsv.shape[:2]
+    center_mask = center_circle_mask(height, width, 0.34)
+
+    red_mask = cv2.inRange(hsv, np.array([0, 70, 20], dtype=np.uint8), np.array([17, 255, 210], dtype=np.uint8))
+    red_mask = cv2.bitwise_or(
+        red_mask,
+        cv2.inRange(hsv, np.array([150, 70, 20], dtype=np.uint8), np.array([180, 255, 210], dtype=np.uint8))
+    )
+    red_mask = cv2.bitwise_and(red_mask, center_mask)
+
+    gray = cv2.cvtColor(piece_img, cv2.COLOR_BGR2GRAY)
+    black_mask = cv2.inRange(gray, 0, 115)
+    black_mask = cv2.bitwise_and(black_mask, center_mask)
+
+    center_area = cv2.countNonZero(center_mask)
+    if center_area == 0:
+        return 0
+    return max(cv2.countNonZero(red_mask), cv2.countNonZero(black_mask)) / center_area
+
+def circle_completeness(piece_img):
+    if piece_img is None or piece_img.size == 0:
+        return 0
+
+    gray = cv2.cvtColor(piece_img, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(gray, 50, 150)
+    height, width = gray.shape[:2]
+    center_x = width / 2
+    center_y = height / 2
+    radius = min(height, width) * 0.43
+    total = 72
+    hits = 0
+
+    for index in range(total):
+        angle = 2 * np.pi * index / total
+        if edge_near_circle(edges, center_x, center_y, radius, angle):
+            hits += 1
+
+    return hits / total
+
+def edge_near_circle(edges, center_x, center_y, radius, angle):
+    height, width = edges.shape[:2]
+    for offset in range(-3, 4):
+        x = int(round(center_x + np.cos(angle) * (radius + offset)))
+        y = int(round(center_y + np.sin(angle) * (radius + offset)))
+        if 0 <= x < width and 0 <= y < height and edges[y, x] > 0:
+            return True
+    return False
+
+def center_circle_mask(height, width, radius_ratio):
+    yy, xx = np.ogrid[:height, :width]
+    radius = min(height, width) * radius_ratio
+    return (((xx - width / 2) ** 2 + (yy - height / 2) ** 2 <= radius ** 2).astype(np.uint8) * 255)
 
 def board_region_bounds(x_array, y_array):
     if x_array is None or y_array is None or len(x_array) != 9 or len(y_array) != 10:

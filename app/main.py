@@ -381,6 +381,11 @@ def compact_candidate_score(score, is_red):
 def format_delta_badge(score_delta_text):
     if not score_delta_text:
         return ""
+    try:
+        if abs(int(score_delta_text)) >= 100:
+            return ""
+    except ValueError:
+        pass
     return f"({score_delta_text})"
 
 def side_emoji(is_red):
